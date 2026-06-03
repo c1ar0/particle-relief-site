@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>把压力释放成光｜粒子减压互动</title>
+    <meta
+      name="description"
+      content="写下一句话，把紧绷转化为柔和粒子。跟随呼吸光球，点击或拖动画面，获得片刻安静。"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <canvas id="particleCanvas" aria-hidden="true"></canvas>
+
+    <main class="shell">
+      <section class="hero" aria-labelledby="title">
+        <p class="eyebrow">Photon Particle Relief · 片刻减压</p>
+        <h1 id="title">把压力写成光，让它慢慢散开</h1>
+        <p class="subtitle">
+          写下此刻的感受，文字会化成柔和的光点慢慢散开。你也可以跟随呼吸光球，或在空白处轻点、拖动，给自己一小段安静的时间。
+        </p>
+      </section>
+
+      <section class="panel composer" aria-label="文字粒子交互区">
+        <div class="section-head">
+          <label for="reliefText">把此刻写下来</label>
+          <span>Ctrl / ⌘ + Enter 也可以释放</span>
+        </div>
+        <div class="input-row">
+          <textarea
+            id="reliefText"
+            maxlength="80"
+            rows="3"
+            placeholder="例如：今天已经很辛苦了，我允许自己慢一点。"
+          ></textarea>
+          <button id="releaseBtn" type="button" aria-label="把文字释放成光点">释放成光</button>
+        </div>
+        <div class="quick-actions" aria-label="快捷短句">
+          <button type="button" data-phrase="吸气，感受身体被温柔托住。">吸气，放慢</button>
+          <button type="button" data-phrase="呼气，把紧绷暂时交给光。">呼气，松开</button>
+          <button type="button" data-phrase="我已经做得足够好了，可以先休息一下。">给自己肯定</button>
+        </div>
+      </section>
+
+      <section class="dashboard">
+        <article class="panel breathing" aria-label="呼吸引导">
+          <p class="card-kicker">呼吸引导</p>
+          <div class="breath-orb" id="breathOrb"><span id="breathText">吸气</span></div>
+          <p id="breathHint">跟着光球：4 秒吸气，停留 4 秒，再用 6 秒慢慢呼气。</p>
+        </article>
+
+        <article class="panel controls" aria-label="粒子控制">
+          <p class="card-kicker">画面调节</p>
+          <label>
+            光点数量
+            <input id="density" type="range" min="30" max="180" value="95" />
+          </label>
+          <label>
+            流动速度
+            <input id="speed" type="range" min="2" max="14" value="7" />
+          </label>
+          <label>
+            柔和程度
+            <input id="calm" type="range" min="1" max="10" value="7" />
+          </label>
+          <button id="clearBtn" type="button" class="ghost">清空，重新开始</button>
+        </article>
+
+        <article class="panel quote" aria-live="polite">
+          <p class="card-kicker">给此刻的一句话</p>
+          <p id="quoteText">把注意力交给一束光，给自己十秒钟。</p>
+        </article>
+      </section>
+    </main>
+
+    <footer>
+      <span>提示：在空白处轻点或拖动，可以生成一圈光点涟漪。</span>
+    </footer>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
