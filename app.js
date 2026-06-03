@@ -45,12 +45,14 @@ const isCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
 const isSmallScreen = Math.min(window.innerWidth || 360, window.innerHeight || 640) < 430;
 const lowMemoryDevice = (navigator.deviceMemory && navigator.deviceMemory <= 3) || (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4);
 const oldPhoneMode = isCoarsePointer && (isSmallScreen || lowMemoryDevice);
-const frameInterval = oldPhoneMode ? 1000 / 24 : (isCoarsePointer ? 1000 / 30 : 1000 / 45);
+// Draw at a deliberate cadence on phones instead of trying to overdraw and stutter.
+// Desktop keeps full refresh; touch devices get stable frame pacing.
+const frameInterval = oldPhoneMode ? 1000 / 30 : (isCoarsePointer ? 1000 / 45 : 1000 / 60);
 
 const QUALITY = {
-  performance: { label: '性能', density: 90000, min: 8, max: 20, cap: 36, dpr: 1, burst: 0.32, homeSpeed: 0.55 },
-  soft: { label: '柔和', density: 72000, min: 10, max: 28, cap: 52, dpr: oldPhoneMode ? 1 : 1.25, burst: 0.45, homeSpeed: 0.7 },
-  rich: { label: '丰富', density: 46000, min: 16, max: 44, cap: 90, dpr: oldPhoneMode ? 1.12 : 1.5, burst: 0.75, homeSpeed: 1 },
+  performance: { label: '流畅', density: 62000, min: 12, max: 30, cap: 44, dpr: 1, burst: 0.42, homeSpeed: 0.62, sprite: 0.86 },
+  soft: { label: '均衡', density: 46000, min: 16, max: 46, cap: 72, dpr: oldPhoneMode ? 1 : 1.32, burst: 0.58, homeSpeed: 0.82, sprite: 1 },
+  rich: { label: '细腻', density: 34000, min: 22, max: 72, cap: 118, dpr: oldPhoneMode ? 1.08 : 1.65, burst: 0.86, homeSpeed: 1, sprite: 1.08 },
 };
 const qualityProfile = () => QUALITY[settings.quality] || QUALITY.soft;
 
@@ -88,6 +90,7 @@ let particles = [];
 let ripples = [];
 let fields = [];
 let touchBlooms = [];
+let spriteCache = new Map();
 let idleTimer = 0;
 let calmMode = false;
 let orientationTilt = { x: 0, y: 0 };
@@ -101,6 +104,9 @@ let lastTempoToggleAt = 0;
 let audioContext;
 let lastToneAt = 0;
 let calmGoal = { x: 0, y: 0, radius: 72, life: 0, progress: 0, hue: 190 };
+let frameBudgetScale = 1;
+let frameSampleAt = 0;
+let frameSampleCount = 0;
 
 const pointers = new Map();
 const theme = () => THEMES[settings.theme] || THEMES.night;
@@ -109,6 +115,52 @@ const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const rand = (min, max) => min + Math.random() * (max - min);
 const pickHue = () => palette()[Math.floor(Math.random() * palette().length)] + rand(-8, 12);
 const pointerList = () => [...pointers.values()];
+
+function quantizedHue(hue, step = 10) {
+  return Math.round((((hue % 360) + 360) % 360) / step) * step;
+}
+
+function getParticleSprite(hue, kind = 'mote') {
+  const q = qualityProfile();
+  const spriteDpr = oldPhoneMode ? 1 : Math.min(1.5, dpr || 1);
+  const hueKey = quantizedHue(hue, oldPhoneMode ? 16 : 10) % 360;
+  const key = `${settings.theme}:${settings.quality}:${kind}:${hueKey}:${spriteDpr}`;
+  if (spriteCache.has(key)) return spriteCache.get(key);
+
+  const base = kind === 'spark' ? 82 : 118;
+  const size = Math.round(base * q.sprite * spriteDpr);
+  const center = size * 0.5;
+  const sprite = document.createElement('canvas');
+  sprite.width = size;
+  sprite.height = size;
+  const sctx = sprite.getContext('2d');
+  sctx.scale(spriteDpr, spriteDpr);
+  const logical = size / spriteDpr;
+  const c = logical * 0.5;
+
+  const glow = sctx.createRadialGradient(c, c, 0, c, c, c);
+  glow.addColorStop(0, `hsla(${hueKey}, 70%, 92%, ${kind === 'spark' ? 0.62 : 0.38})`);
+  glow.addColorStop(0.18, `hsla(${hueKey}, 64%, 76%, ${kind === 'spark' ? 0.34 : 0.24})`);
+  glow.addColorStop(0.52, `hsla(${hueKey}, 58%, 58%, ${kind === 'spark' ? 0.12 : 0.10})`);
+  glow.addColorStop(1, 'rgba(0,0,0,0)');
+  sctx.fillStyle = glow;
+  sctx.beginPath();
+  sctx.arc(c, c, c, 0, Math.PI * 2);
+  sctx.fill();
+
+  // A tiny pearly core gives the low-particle modes more perceived detail without
+  // adding extra live particles or per-frame gradients.
+  sctx.globalCompositeOperation = 'lighter';
+  sctx.fillStyle = `hsla(${hueKey}, 38%, 94%, ${kind === 'spark' ? 0.62 : 0.30})`;
+  sctx.beginPath();
+  sctx.arc(c, c, Math.max(1.1, logical * (kind === 'spark' ? 0.045 : 0.026)), 0, Math.PI * 2);
+  sctx.fill();
+
+  const spriteData = { canvas: sprite, half: center / spriteDpr, logical };
+  spriteCache.set(key, spriteData);
+  if (spriteCache.size > 72) spriteCache = new Map([...spriteCache].slice(-48));
+  return spriteData;
+}
 
 window.particleCalm = {
   settings,
@@ -214,26 +266,22 @@ class Particle {
   }
 
   draw() {
-  const q = qualityProfile();
-  const alpha = clamp(this.life / this.maxLife, 0, 1);
-  const pulse = 0.92 + Math.sin(this.seed * 1.2 + hueDrift * 0.006) * 0.08;
-  const radius = this.size * (this.home ? pulse : 1 + (1 - alpha) * 0.65);
-  const color = (this.hue + hueDrift + (calmMode ? 18 : 0)) % 360;
-  const glowRadius = radius * (this.kind === 'spark' ? 2.4 : 2.25);
+    const alpha = clamp(this.life / this.maxLife, 0, 1);
+    const pulse = 0.92 + Math.sin(this.seed * 1.2 + hueDrift * 0.006) * 0.08;
+    const radius = this.size * (this.home ? pulse : 1 + (1 - alpha) * 0.65);
+    const color = (this.hue + hueDrift + (calmMode ? 18 : 0)) % 360;
+    const sprite = getParticleSprite(color, this.kind);
+    const scale = (radius * (this.kind === 'spark' ? 2.55 : 2.35)) / sprite.half;
+    const drawSize = sprite.logical * scale;
 
-  const glow = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, glowRadius);
-  glow.addColorStop(0, `hsla(${color}, 56%, 82%, ${alpha * (this.home ? 0.075 : 0.13)})`);
-  glow.addColorStop(0.46, `hsla(${color}, 50%, 62%, ${alpha * (this.home ? 0.036 : 0.06)})`);
-    glow.addColorStop(1, `hsla(${color}, 58%, 40%, 0)`);
-    ctx.fillStyle = glow;
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, glowRadius, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.globalAlpha = alpha * (this.home ? 0.58 : 0.82);
+    ctx.drawImage(sprite.canvas, this.x - drawSize * 0.5, this.y - drawSize * 0.5, drawSize, drawSize);
+    ctx.globalAlpha = 1;
 
-    if (!this.home) {
-      ctx.fillStyle = `hsla(${color}, 46%, 88%, ${alpha * 0.28})`;
+    if (!this.home && !oldPhoneMode) {
+      ctx.fillStyle = `hsla(${color}, 46%, 90%, ${alpha * 0.20})`;
       ctx.beginPath();
-      ctx.arc(this.x, this.y, Math.max(1.2, radius * 0.16), 0, Math.PI * 2);
+      ctx.arc(this.x, this.y, Math.max(1.1, radius * 0.14), 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -253,6 +301,7 @@ function cycleTheme() {
   const keys = Object.keys(THEMES);
   settings.theme = keys[(keys.indexOf(settings.theme) + 1) % keys.length];
   saveSettings();
+  spriteCache.clear();
   applyTheme();
   burst(width * 0.5, height * 0.5, 12, true);
   tone('theme');
@@ -264,6 +313,7 @@ function cycleQuality() {
   const keys = Object.keys(QUALITY);
   settings.quality = keys[(keys.indexOf(settings.quality) + 1) % keys.length];
   saveSettings();
+  spriteCache.clear();
   particles = particles.filter((particle) => particle.home).slice(0, targetHomeCount());
   resize();
   syncSettingsControls();
@@ -281,14 +331,14 @@ function updateSetting(key, value) {
 function targetHomeCount() {
   const area = width * height;
   const q = qualityProfile();
-  const mobileFactor = width < 720 ? 0.78 : 1;
+  const mobileFactor = width < 720 ? 0.9 : 1;
   const reducedFactor = reduced() ? 0.72 : 1;
-  return Math.round(clamp(area / q.density, q.min, q.max) * mobileFactor * reducedFactor);
+  return Math.round(clamp(area / q.density, q.min, q.max) * mobileFactor * reducedFactor * frameBudgetScale);
 }
 
 function maxParticleCount() {
   const q = qualityProfile();
-  return reduced() ? Math.round(q.cap * 0.72) : q.cap;
+  return Math.round((reduced() ? q.cap * 0.72 : q.cap) * frameBudgetScale);
 }
 
 function seedHome() {
@@ -298,7 +348,7 @@ function seedHome() {
     particles.push(new Particle(rand(0, width), rand(0, height), {
       home: true,
       speed: rand(0.0025, 0.018) * qualityProfile().homeSpeed,
-      size: rand(oldPhoneMode ? 34 : 24, oldPhoneMode ? 86 : 68),
+      size: rand(oldPhoneMode ? 22 : 18, oldPhoneMode ? 54 : 58),
       life: rand(3600, 7600),
       drag: 0.9992,
     }));
@@ -318,6 +368,7 @@ function resize() {
   ctx.globalCompositeOperation = 'source-over';
   ctx.fillStyle = theme().base;
   ctx.fillRect(0, 0, width, height);
+  spriteCache.clear();
   seedHome();
   if (!calmGoal.x || calmGoal.x > width || calmGoal.y > height) placeGoal(true);
 }
@@ -326,6 +377,10 @@ function trimParticles() {
   const limit = maxParticleCount();
   if (particles.length <= limit) return;
   const home = particles.filter((particle) => particle.home);
+  if (home.length >= limit) {
+    particles = home.slice(-limit);
+    return;
+  }
   const active = particles.filter((particle) => !particle.home).slice(-(limit - home.length));
   particles = home.concat(active);
 }
@@ -534,9 +589,24 @@ function idleBreathe(dt) {
 }
 
 function animate(now = 0) {
+  if (lastPaint && now - lastPaint < frameInterval) {
+    requestAnimationFrame(animate);
+    return;
+  }
   const rawDt = lastFrame ? (now - lastFrame) / 16.666 : 1;
   lastFrame = now;
+  lastPaint = now;
   const dt = clamp(rawDt, 0.45, 2.2) * timeScale;
+  frameSampleCount += 1;
+  if (!frameSampleAt) frameSampleAt = now;
+  if (now - frameSampleAt > 1800) {
+    const fps = frameSampleCount * 1000 / (now - frameSampleAt);
+    const targetFps = 1000 / frameInterval;
+    if (fps < targetFps * 0.72) frameBudgetScale = Math.max(0.64, frameBudgetScale - 0.08);
+    else if (fps > targetFps * 0.92) frameBudgetScale = Math.min(1, frameBudgetScale + 0.04);
+    frameSampleAt = now;
+    frameSampleCount = 0;
+  }
   hueDrift = (hueDrift + (reduced() ? 0.006 : 0.024) * dt) % 360;
   gestureSpin *= Math.pow(0.935, dt);
   gestureZoom *= Math.pow(0.925, dt);
@@ -553,8 +623,9 @@ function animate(now = 0) {
     }
   });
 
+  const activePointers = pointerList();
   particles.forEach((particle) => {
-    particle.update(dt);
+    particle.update(dt, activePointers);
     particle.draw();
   });
 

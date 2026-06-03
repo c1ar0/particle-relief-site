@@ -67,9 +67,37 @@ body {
   -webkit-user-select: none;
 }
 
+body::before,
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+body::before {
+  z-index: 1;
+  opacity: 0.72;
+  background:
+    radial-gradient(ellipse at 28% 24%, rgba(148, 215, 255, 0.075), transparent 34vmax),
+    radial-gradient(ellipse at 76% 70%, rgba(255, 157, 218, 0.055), transparent 38vmax),
+    linear-gradient(120deg, rgba(255, 255, 255, 0.025), transparent 28%, rgba(120, 170, 255, 0.018) 52%, transparent 78%);
+  mix-blend-mode: screen;
+}
+
+body::after {
+  z-index: 2;
+  opacity: 0.13;
+  background-image:
+    radial-gradient(circle at 25% 35%, rgba(255, 255, 255, 0.55) 0 0.7px, transparent 0.8px),
+    radial-gradient(circle at 70% 62%, rgba(190, 225, 255, 0.36) 0 0.55px, transparent 0.7px);
+  background-size: 23px 23px, 37px 37px;
+}
+
 #particleCanvas {
   position: fixed;
   inset: 0;
+  z-index: 0;
   display: block;
   width: 100vw;
   height: 100vh;
