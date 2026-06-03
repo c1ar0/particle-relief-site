@@ -4,12 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
     <title>光点粒子减压小游戏</title>
-    <meta name="description" content="全屏无文字、手机不滚动的交互式光点粒子减压小游戏。" />
+    <meta name="description" content="全屏无文字、手机不滚动的交互式光点粒子减压小游戏，含声音、震动、方向感应、主题、隐藏设置与无压力目标。" />
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <canvas id="particleCanvas" aria-label="交互式光点粒子减压小游戏"></canvas>
+    <button id="settingsToggleHint" class="settings-hotspot" type="button" aria-label="打开隐藏设置"></button>
+    <section id="hiddenSettings" class="settings-panel" aria-label="隐藏设置" aria-hidden="true" hidden>
+      <button type="button" data-setting="sound" aria-pressed="true">声音</button>
+      <button type="button" data-setting="haptics" aria-pressed="true">震动</button>
+      <button type="button" data-setting="orientation" aria-pressed="true">方向</button>
+      <button type="button" data-setting="goals" aria-pressed="true">目标</button>
+      <button type="button" data-action="theme">主题</button>
+      <button type="button" data-action="close" aria-label="关闭隐藏设置">×</button>
+    </section>
     <script src="./app.js"></script>
   </body>
 </html>
