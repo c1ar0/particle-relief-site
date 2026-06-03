@@ -1,5 +1,5 @@
 const canvas = document.querySelector('#particleCanvas');
-const ctx = canvas.getContext('2d', { alpha: true });
+const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 const settingsPanel = document.querySelector('#hiddenSettings');
 const settingsToggleHint = document.querySelector('#settingsToggleHint');
 
@@ -41,17 +41,35 @@ const THEMES = {
   },
 };
 
-const defaultSettings = {
-  sound: true,
-  haptics: true,
-  orientation: true,
-  theme: 'night',
-  goals: true,
+const isCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
+const isSmallScreen = Math.min(window.innerWidth || 360, window.innerHeight || 640) < 430;
+const lowMemoryDevice = (navigator.deviceMemory && navigator.deviceMemory <= 3) || (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4);
+const oldPhoneMode = isCoarsePointer && (isSmallScreen || lowMemoryDevice);
+const frameInterval = oldPhoneMode ? 1000 / 24 : (isCoarsePointer ? 1000 / 30 : 1000 / 45);
+
+const QUALITY = {
+  performance: { label: '性能', density: 90000, min: 8, max: 20, cap: 36, dpr: 1, burst: 0.32, homeSpeed: 0.55 },
+  soft: { label: '柔和', density: 72000, min: 10, max: 28, cap: 52, dpr: oldPhoneMode ? 1 : 1.25, burst: 0.45, homeSpeed: 0.7 },
+  rich: { label: '丰富', density: 46000, min: 16, max: 44, cap: 90, dpr: oldPhoneMode ? 1.12 : 1.5, burst: 0.75, homeSpeed: 1 },
 };
+const qualityProfile = () => QUALITY[settings.quality] || QUALITY.soft;
+
+const defaultSettings = {
+  sound: false,
+  haptics: false,
+  orientation: false,
+  theme: 'night',
+  goals: false,
+  quality: oldPhoneMode ? 'performance' : 'soft',
+};
+
+const SETTINGS_VERSION = 2;
 
 function loadSettings() {
   try {
-    return { ...defaultSettings, ...JSON.parse(localStorage.getItem('particleCalmSettings') || '{}') };
+    const stored = JSON.parse(localStorage.getItem('particleCalmSettings') || '{}');
+    if (stored.version !== SETTINGS_VERSION) return { ...defaultSettings };
+    return { ...defaultSettings, ...stored };
   } catch {
     return { ...defaultSettings };
   }
@@ -65,6 +83,7 @@ let dpr = 1;
 let timeScale = 1;
 let hueDrift = 0;
 let lastFrame = 0;
+let lastPaint = 0;
 let particles = [];
 let ripples = [];
 let fields = [];
@@ -96,6 +115,7 @@ window.particleCalm = {
   openSettings: () => setSettingsPanel(true),
   closeSettings: () => setSettingsPanel(false),
   cycleTheme,
+  cycleQuality,
   toggleSound: () => updateSetting('sound', !settings.sound),
   toggleHaptics: () => updateSetting('haptics', !settings.haptics),
   toggleOrientation: () => updateSetting('orientation', !settings.orientation),
@@ -105,13 +125,13 @@ window.particleCalm = {
 class Particle {
   constructor(x, y, options = {}) {
     const angle = options.angle ?? rand(0, Math.PI * 2);
-    const speed = (options.speed ?? rand(0.08, 1.25)) * (reduced() ? 0.55 : 1);
+    const speed = (options.speed ?? rand(0.015, 0.22)) * (reduced() ? 0.45 : 1);
     this.x = x;
     this.y = y;
     this.vx = Math.cos(angle) * speed;
     this.vy = Math.sin(angle) * speed;
-    this.size = options.size ?? rand(0.7, 2.8);
-    this.life = options.life ?? rand(120, 260);
+    this.size = options.size ?? rand(10, 34);
+    this.life = options.life ?? rand(180, 360);
     this.maxLife = this.life;
     this.hue = options.hue ?? pickHue();
     this.home = Boolean(options.home);
@@ -121,12 +141,12 @@ class Particle {
     this.kind = options.kind ?? 'mote';
   }
 
-  update(dt) {
+  update(dt, activePointers = []) {
     this.seed += this.spin * dt;
 
-    const driftStrength = this.home ? 0.0045 : 0.012;
-    this.vx += Math.cos(this.seed + this.y * 0.004) * driftStrength * dt;
-    this.vy += Math.sin(this.seed + this.x * 0.004) * driftStrength * dt;
+    const driftStrength = this.home ? 0.0018 : 0.0045;
+    this.vx += Math.cos(this.seed + this.y * 0.0016) * driftStrength * dt;
+    this.vy += Math.sin(this.seed + this.x * 0.0016) * driftStrength * dt;
 
     if (settings.orientation && orientationReady) {
       const tiltPower = this.home ? 0.0022 : 0.0044;
@@ -147,7 +167,7 @@ class Particle {
       this.vy += (dy / dist) * gestureZoom * reach * dt;
     }
 
-    pointerList().forEach((point) => {
+    activePointers.forEach((point) => {
       const dx = point.x - this.x;
       const dy = point.y - this.y;
       const distSq = dx * dx + dy * dy;
@@ -156,7 +176,7 @@ class Particle {
         const dist = Math.sqrt(distSq) || 1;
         const proximity = 1 - dist / radius;
         const sign = calmMode ? -1 : 1;
-        const force = proximity * (point.down ? 0.072 : 0.026) * sign * dt;
+        const force = proximity * (point.down ? 0.024 : 0.010) * sign * dt;
         this.vx += (dx / dist) * force;
         this.vy += (dy / dist) * force;
       }
@@ -194,30 +214,33 @@ class Particle {
   }
 
   draw() {
-    const alpha = clamp(this.life / this.maxLife, 0, 1);
-    const pulse = 0.84 + Math.sin(this.seed * 2.1 + hueDrift * 0.015) * 0.12;
-    const radius = this.size * (this.home ? pulse : 1 + (1 - alpha) * 1.8);
-    const color = (this.hue + hueDrift + (calmMode ? 18 : 0)) % 360;
-    const glowRadius = radius * (this.kind === 'spark' ? 7.8 : 6.2);
+  const q = qualityProfile();
+  const alpha = clamp(this.life / this.maxLife, 0, 1);
+  const pulse = 0.92 + Math.sin(this.seed * 1.2 + hueDrift * 0.006) * 0.08;
+  const radius = this.size * (this.home ? pulse : 1 + (1 - alpha) * 0.65);
+  const color = (this.hue + hueDrift + (calmMode ? 18 : 0)) % 360;
+  const glowRadius = radius * (this.kind === 'spark' ? 2.4 : 2.25);
 
-    const glow = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, glowRadius);
-    glow.addColorStop(0, `hsla(${color}, 62%, 86%, ${alpha * 0.34})`);
-    glow.addColorStop(0.34, `hsla(${color}, 58%, 64%, ${alpha * 0.15})`);
+  const glow = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, glowRadius);
+  glow.addColorStop(0, `hsla(${color}, 56%, 82%, ${alpha * (this.home ? 0.075 : 0.13)})`);
+  glow.addColorStop(0.46, `hsla(${color}, 50%, 62%, ${alpha * (this.home ? 0.036 : 0.06)})`);
     glow.addColorStop(1, `hsla(${color}, 58%, 40%, 0)`);
     ctx.fillStyle = glow;
     ctx.beginPath();
     ctx.arc(this.x, this.y, glowRadius, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = `hsla(${color}, 46%, 88%, ${alpha * 0.68})`;
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, Math.max(0.55, radius * 0.48), 0, Math.PI * 2);
-    ctx.fill();
+    if (!this.home) {
+      ctx.fillStyle = `hsla(${color}, 46%, 88%, ${alpha * 0.28})`;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, Math.max(1.2, radius * 0.16), 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
 
 function saveSettings() {
-  localStorage.setItem('particleCalmSettings', JSON.stringify(settings));
+  localStorage.setItem('particleCalmSettings', JSON.stringify({ ...settings, version: SETTINGS_VERSION }));
 }
 
 function applyTheme() {
@@ -231,9 +254,18 @@ function cycleTheme() {
   settings.theme = keys[(keys.indexOf(settings.theme) + 1) % keys.length];
   saveSettings();
   applyTheme();
-  burst(width * 0.5, height * 0.5, 28, true);
+  burst(width * 0.5, height * 0.5, 12, true);
   tone('theme');
   buzz([12]);
+  syncSettingsControls();
+}
+
+function cycleQuality() {
+  const keys = Object.keys(QUALITY);
+  settings.quality = keys[(keys.indexOf(settings.quality) + 1) % keys.length];
+  saveSettings();
+  particles = particles.filter((particle) => particle.home).slice(0, targetHomeCount());
+  resize();
   syncSettingsControls();
 }
 
@@ -248,13 +280,15 @@ function updateSetting(key, value) {
 
 function targetHomeCount() {
   const area = width * height;
-  const density = reduced() ? 10500 : 7600;
+  const q = qualityProfile();
   const mobileFactor = width < 720 ? 0.78 : 1;
-  return Math.round(clamp(area / density, 90, reduced() ? 150 : 260) * mobileFactor);
+  const reducedFactor = reduced() ? 0.72 : 1;
+  return Math.round(clamp(area / q.density, q.min, q.max) * mobileFactor * reducedFactor);
 }
 
 function maxParticleCount() {
-  return reduced() ? 260 : (width < 720 ? 420 : 620);
+  const q = qualityProfile();
+  return reduced() ? Math.round(q.cap * 0.72) : q.cap;
 }
 
 function seedHome() {
@@ -263,17 +297,17 @@ function seedHome() {
   while (homeCount < target) {
     particles.push(new Particle(rand(0, width), rand(0, height), {
       home: true,
-      speed: rand(0.025, 0.32),
-      size: rand(0.55, 1.95),
-      life: rand(900, 1900),
-      drag: 0.996,
+      speed: rand(0.0025, 0.018) * qualityProfile().homeSpeed,
+      size: rand(oldPhoneMode ? 34 : 24, oldPhoneMode ? 86 : 68),
+      life: rand(3600, 7600),
+      drag: 0.9992,
     }));
     homeCount += 1;
   }
 }
 
 function resize() {
-  dpr = clamp(window.devicePixelRatio || 1, 1, 2);
+  dpr = Math.min(window.devicePixelRatio || 1, qualityProfile().dpr);
   width = Math.max(1, Math.floor(window.innerWidth));
   height = Math.max(1, Math.floor(window.visualViewport?.height || window.innerHeight));
   canvas.width = Math.floor(width * dpr);
@@ -329,7 +363,7 @@ function buzz(pattern) {
 }
 
 function burst(x, y, amount = 36, gentle = false) {
-  const count = Math.round(amount * (reduced() ? 0.45 : 1));
+  const count = Math.max(3, Math.round(amount * qualityProfile().burst * (reduced() ? 0.38 : 1)));
   const baseHue = pickHue();
   for (let i = 0; i < count; i += 1) {
     const ring = i / Math.max(1, count);
@@ -352,7 +386,7 @@ function burst(x, y, amount = 36, gentle = false) {
 
 function stream(point) {
   const now = performance.now();
-  const interval = reduced() ? 180 : 82;
+  const interval = oldPhoneMode ? 180 : (reduced() ? 220 : 120);
   if (now - point.lastStream < interval) return;
   point.lastStream = now;
 
@@ -360,13 +394,13 @@ function stream(point) {
   const dy = point.y - point.py;
   const angle = Math.atan2(dy, dx) + Math.PI + rand(-0.72, 0.72);
   const distance = Math.hypot(dx, dy);
-  const amount = clamp(Math.round(distance / 18), 1, reduced() ? 3 : 7);
+  const amount = clamp(Math.round(distance / 34), 1, oldPhoneMode || reduced() ? 2 : 4);
   for (let i = 0; i < amount; i += 1) {
     particles.push(new Particle(point.x + rand(-7, 7), point.y + rand(-7, 7), {
       angle,
-      speed: rand(0.28, 1.8),
-      size: rand(0.7, 2.4),
-      life: rand(80, 170),
+      speed: rand(0.06, 0.75),
+      size: rand(1.4, 4.2),
+      life: rand(130, 260),
       hue: pickHue(),
       drag: 0.986,
     }));
@@ -378,7 +412,7 @@ function longPressBloom(point) {
   if (!point.longBloomed && heldFor > 560) {
     point.longBloomed = true;
     calmMode = true;
-    burst(point.x, point.y, 52, true);
+    burst(point.x, point.y, 18, true);
     fields.push({ x: point.x, y: point.y, radius: 360, power: 0.024, life: 240, maxLife: 240 });
     tone('long');
     buzz([20, 32, 20]);
@@ -428,7 +462,7 @@ function updateGoal(dt) {
   if (nearPointer || idleNear) calmGoal.progress += dt * (nearPointer ? 0.018 : 0.004);
   else calmGoal.progress = Math.max(0, calmGoal.progress - dt * 0.006);
   if (calmGoal.progress >= 1) {
-    burst(calmGoal.x, calmGoal.y, 34, true);
+    burst(calmGoal.x, calmGoal.y, 12, true);
     fields.push({ x: calmGoal.x, y: calmGoal.y, radius: calmGoal.radius * 4, power: 0.018, life: 180, maxLife: 180 });
     tone('long');
     buzz([15]);
@@ -609,7 +643,7 @@ function onPointerDown(event) {
   point.started = performance.now();
   point.lastStream = 0;
   point.longBloomed = false;
-  burst(point.x, point.y, 42, false);
+  burst(point.x, point.y, 12, false);
   tone('tap');
   buzz([12]);
   maybeOpenHiddenSettings(point);
@@ -635,7 +669,7 @@ function onPointerUp(event) {
   event.preventDefault();
   clearTimeout(settingsHoldTimer);
   const point = upsertPointer(event, false);
-  if (!point.longBloomed) burst(point.x, point.y, 20, true);
+  if (!point.longBloomed) burst(point.x, point.y, 6, true);
   const now = performance.now();
   if (now - lastTapAt < 310) toggleQuietTempo();
   lastTapAt = now;
@@ -650,7 +684,7 @@ function toggleQuietTempo() {
   lastTempoToggleAt = now;
   timeScale = timeScale === 1 ? 0.62 : 1;
   fields.push({ x: width / 2, y: height / 2, radius: Math.min(width, height) * 0.62, power: 0.012, life: 170, maxLife: 170 });
-  burst(width / 2, height / 2, 34, true);
+  burst(width / 2, height / 2, 10, true);
   tone('double');
   buzz([18, 42, 18]);
 }
@@ -695,6 +729,8 @@ function syncSettingsControls() {
   });
   const themeButton = settingsPanel.querySelector('[data-action="theme"]');
   if (themeButton) themeButton.textContent = `主题：${theme().name}`;
+  const qualityButton = settingsPanel.querySelector('[data-action="quality"]');
+  if (qualityButton) qualityButton.textContent = `档位：${qualityProfile().label}`;
 }
 
 function bindSettingsPanel() {
@@ -708,6 +744,7 @@ function bindSettingsPanel() {
     button.addEventListener('click', () => updateSetting(button.dataset.setting, !settings[button.dataset.setting]));
   });
   settingsPanel.querySelector('[data-action="theme"]')?.addEventListener('click', cycleTheme);
+  settingsPanel.querySelector('[data-action="quality"]')?.addEventListener('click', cycleQuality);
   settingsPanel.querySelector('[data-action="close"]')?.addEventListener('click', () => setSettingsPanel(false));
   syncSettingsControls();
 }
@@ -751,4 +788,4 @@ bindSettingsPanel();
 resize();
 placeGoal(true);
 requestAnimationFrame(animate);
-setTimeout(() => burst(width * 0.5, height * 0.5, 46, true), 220);
+setTimeout(() => burst(width * 0.5, height * 0.5, 10, true), 260);
