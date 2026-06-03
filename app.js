@@ -1,214 +1,259 @@
 const canvas = document.querySelector('#particleCanvas');
 const ctx = canvas.getContext('2d');
-const textInput = document.querySelector('#reliefText');
-const releaseBtn = document.querySelector('#releaseBtn');
-const clearBtn = document.querySelector('#clearBtn');
-const density = document.querySelector('#density');
-const speed = document.querySelector('#speed');
-const calm = document.querySelector('#calm');
-const quoteText = document.querySelector('#quoteText');
-const breathText = document.querySelector('#breathText');
 
-const quotes = [
-  '不需要马上解决全部，先把肩膀放低一点。',
-  '每一次呼气，都是把身体轻轻还给自己。',
-  '允许自己慢下来，也是一种可靠的照顾。',
-  '此刻先不用逞强，让光替你接住一些杂念。',
-  '把注意力交给一束光，给自己十秒钟。',
-  '你可以暂停一下，世界不会因此失去秩序。',
-];
+const pointer = {
+  x: 0,
+  y: 0,
+  down: false,
+  active: false,
+  lastBurst: 0,
+};
 
 let width = 0;
 let height = 0;
-let dpr = Math.min(window.devicePixelRatio || 1, 2);
+let dpr = 1;
+let hue = 0;
 let particles = [];
-let pointerDown = false;
-let hueShift = 0;
+let wells = [];
+let ripples = [];
+
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const palette = [176, 194, 214, 250, 286, 318, 150];
+const GLOW_SATURATION = 72;
+const CORE_SATURATION = 58;
 
 class Particle {
   constructor(x, y, options = {}) {
     const angle = options.angle ?? Math.random() * Math.PI * 2;
-    const velocity = options.velocity ?? (0.3 + Math.random() * Number(speed.value) * 0.18);
+    const speed = options.speed ?? 0.25 + Math.random() * 1.25;
     this.x = x;
     this.y = y;
-    this.vx = Math.cos(angle) * velocity;
-    this.vy = Math.sin(angle) * velocity;
-    this.life = options.life ?? 90 + Math.random() * 120;
+    this.vx = Math.cos(angle) * speed;
+    this.vy = Math.sin(angle) * speed;
+    this.life = options.life ?? 180 + Math.random() * 220;
     this.maxLife = this.life;
-    this.size = options.size ?? 1.2 + Math.random() * 3.6;
-    this.hue = options.hue ?? 175 + Math.random() * 120;
-    this.spin = (Math.random() - 0.5) * 0.035;
-    this.orbit = Math.random() * Math.PI * 2;
-    this.kind = options.kind ?? 'photon';
+    this.size = options.size ?? 1 + Math.random() * 3.8;
+    this.hue = options.hue ?? palette[Math.floor(Math.random() * palette.length)] + Math.random() * 22;
+    this.twist = Math.random() * Math.PI * 2;
+    this.spin = (Math.random() - 0.5) * 0.04;
+    this.home = options.home ?? false;
   }
 
   update() {
-    const softness = Number(calm.value) / 10;
-    this.orbit += this.spin;
-    this.vx += Math.cos(this.orbit) * 0.012 * softness;
-    this.vy += Math.sin(this.orbit) * 0.012 * softness;
-    this.vx *= 0.992 - softness * 0.01;
-    this.vy *= 0.992 - softness * 0.01;
+    this.twist += this.spin;
+    this.vx += Math.cos(this.twist) * 0.018;
+    this.vy += Math.sin(this.twist) * 0.018;
+
+    if (pointer.active) {
+      const dx = pointer.x - this.x;
+      const dy = pointer.y - this.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq < 42000) {
+        const dist = Math.sqrt(distSq) || 1;
+        const force = (1 - dist / 205) * (pointer.down ? 0.78 : 0.22);
+        this.vx += (dx / dist) * force;
+        this.vy += (dy / dist) * force;
+      }
+    }
+
+    wells.forEach((well) => {
+      const dx = well.x - this.x;
+      const dy = well.y - this.y;
+      const distSq = dx * dx + dy * dy;
+      const radiusSq = well.radius * well.radius;
+      if (distSq < radiusSq) {
+        const dist = Math.sqrt(distSq) || 1;
+        const pull = (1 - dist / well.radius) * well.power * (well.life / well.maxLife);
+        this.vx += (dx / dist) * pull;
+        this.vy += (dy / dist) * pull;
+      }
+    });
+
+    this.vx *= 0.985;
+    this.vy *= 0.985;
     this.x += this.vx;
     this.y += this.vy;
-    this.life -= 1;
+    this.life -= this.home ? 0.18 : 1;
+
+    if (this.home) {
+      if (this.x < -40) this.x = width + 40;
+      if (this.x > width + 40) this.x = -40;
+      if (this.y < -40) this.y = height + 40;
+      if (this.y > height + 40) this.y = -40;
+    }
   }
 
   draw() {
-    const alpha = Math.max(this.life / this.maxLife, 0);
-    const radius = this.size * (0.8 + (1 - alpha) * 1.8);
-    const hue = (this.hue + hueShift) % 360;
-    const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, radius * 5);
-    gradient.addColorStop(0, `hsla(${hue}, 100%, 92%, ${alpha})`);
-    gradient.addColorStop(0.28, `hsla(${hue}, 100%, 66%, ${alpha * 0.55})`);
-    gradient.addColorStop(1, `hsla(${hue}, 100%, 50%, 0)`);
-    ctx.fillStyle = gradient;
+    const alpha = Math.max(0, this.life / this.maxLife);
+    const pulse = 0.72 + Math.sin(this.twist * 2.3 + hue * 0.03) * 0.22;
+    const radius = this.size * (this.home ? pulse : 1 + (1 - alpha) * 2.8);
+    const color = (this.hue + hue) % 360;
+    const glow = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, radius * 6.2);
+    glow.addColorStop(0, `hsla(${color}, ${GLOW_SATURATION}%, 86%, ${alpha * 0.42})`);
+    glow.addColorStop(0.28, `hsla(${color}, ${GLOW_SATURATION}%, 64%, ${alpha * 0.2})`);
+    glow.addColorStop(1, `hsla(${color}, ${GLOW_SATURATION}%, 46%, 0)`);
+    ctx.fillStyle = glow;
     ctx.beginPath();
-    ctx.arc(this.x, this.y, radius * 5, 0, Math.PI * 2);
+    ctx.arc(this.x, this.y, radius * 6.2, 0, Math.PI * 2);
     ctx.fill();
 
-    if (this.kind === 'text') {
-      ctx.fillStyle = `hsla(${hue}, 100%, 94%, ${alpha * 0.55})`;
-      ctx.beginPath();
-      ctx.arc(this.x, this.y, Math.max(1, radius * 0.58), 0, Math.PI * 2);
-      ctx.fill();
-    }
+    ctx.fillStyle = `hsla(${color}, ${CORE_SATURATION}%, 88%, ${alpha * 0.72})`;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, Math.max(0.8, radius * 0.55), 0, Math.PI * 2);
+    ctx.fill();
   }
 }
 
 function resize() {
   dpr = Math.min(window.devicePixelRatio || 1, 2);
   width = window.innerWidth;
-  height = window.innerHeight;
+  height = window.visualViewport?.height || window.innerHeight;
   canvas.width = Math.floor(width * dpr);
   canvas.height = Math.floor(height * dpr);
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  seedBackground();
+  seed();
 }
 
-function seedBackground() {
-  const target = Number(density.value);
-  particles = particles.filter((p) => p.kind === 'text' && p.life > 0).slice(-260);
-  for (let i = particles.length; i < target; i += 1) {
+function targetCount() {
+  const area = width * height;
+  const mobileBoost = width < 700 ? 0.78 : 1;
+  return Math.round(Math.min(280, Math.max(100, area / 6800)) * mobileBoost);
+}
+
+function seed() {
+  particles = particles.filter((particle) => !particle.home && particle.life > 0).slice(-180);
+  const count = targetCount();
+  while (particles.filter((particle) => particle.home).length < count) {
     particles.push(new Particle(Math.random() * width, Math.random() * height, {
-      velocity: 0.1 + Math.random() * 0.45,
-      life: 180 + Math.random() * 260,
-      size: 0.7 + Math.random() * 2,
-      hue: 185 + Math.random() * 90,
+      speed: 0.08 + Math.random() * 0.42,
+      size: 0.55 + Math.random() * 1.9,
+      life: 900 + Math.random() * 900,
+      home: true,
     }));
   }
 }
 
-function burst(x, y, amount = 36, phrase = '') {
-  const chars = [...phrase.trim()].filter((c) => c !== ' ');
-  const count = Math.min(220, Math.max(amount, chars.length * 8));
+function burst(x, y, amount = 56) {
+  const count = reducedMotion ? Math.floor(amount * 0.45) : amount;
   for (let i = 0; i < count; i += 1) {
-    const charCode = chars.length ? chars[i % chars.length].charCodeAt(0) : i * 13;
+    const ring = i / count;
     particles.push(new Particle(x, y, {
-      angle: (i / count) * Math.PI * 2 + Math.sin(charCode) * 0.42,
-      velocity: 0.6 + Math.random() * Number(speed.value) * 0.45,
-      life: 95 + Math.random() * 125,
-      size: 1.6 + Math.random() * 4.4,
-      hue: (charCode * 7 + 160) % 360,
-      kind: phrase ? 'text' : 'photon',
+      angle: ring * Math.PI * 2 + Math.random() * 0.55,
+      speed: 1.2 + Math.random() * 5.4,
+      size: 1 + Math.random() * 3.1,
+      life: 80 + Math.random() * 130,
+      hue: palette[i % palette.length] + Math.random() * 28,
     }));
   }
-  quoteText.textContent = quotes[Math.floor(Math.random() * quotes.length)];
+  wells.push({ x, y, radius: 230, power: -0.36, life: 34, maxLife: 34 });
+  ripples.push({ x, y, radius: 8, life: 40, maxLife: 40, hue: palette[Math.floor(Math.random() * palette.length)] });
 }
 
-function releaseText() {
-  const phrase = textInput.value.trim() || textInput.placeholder.replace('例如：', '');
-  const centerX = width * (0.42 + Math.random() * 0.16);
-  const centerY = height * (window.innerWidth <= 860 ? 0.32 + Math.random() * 0.12 : 0.42 + Math.random() * 0.18);
-  burst(centerX, centerY, 56, phrase);
-  textInput.value = '';
-  releaseBtn.textContent = '已经散开';
-  window.setTimeout(() => { releaseBtn.textContent = '释放成光'; }, 900);
+function breatheOrb(time) {
+  const cycle = (time % 7200) / 7200;
+  const ease = 0.5 - Math.cos(cycle * Math.PI * 2) * 0.5;
+  const radius = Math.min(width, height) * (0.09 + ease * 0.035);
+  const x = width * 0.5 + Math.cos(time * 0.00018) * width * 0.09;
+  const y = height * 0.5 + Math.sin(time * 0.00021) * height * 0.08;
+  const orb = ctx.createRadialGradient(x, y, 0, x, y, radius * 2.9);
+  orb.addColorStop(0, `hsla(${188 + hue}, 70%, 86%, 0.06)`);
+  orb.addColorStop(0.34, `hsla(${210 + hue}, 64%, 66%, 0.04)`);
+  orb.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = orb;
+  ctx.beginPath();
+  ctx.arc(x, y, radius * 2.9, 0, Math.PI * 2);
+  ctx.fill();
 }
 
-function animate() {
-  hueShift += 0.08;
+function drawRipples() {
+  ripples.forEach((ripple) => {
+    const alpha = ripple.life / ripple.maxLife;
+    ctx.strokeStyle = `hsla(${(ripple.hue + hue) % 360}, 66%, 76%, ${alpha * 0.24})`;
+    ctx.lineWidth = 0.8 + alpha * 2.4;
+    ctx.beginPath();
+    ctx.arc(ripple.x, ripple.y, ripple.radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ripple.radius += 5.8;
+    ripple.life -= 1;
+  });
+  ripples = ripples.filter((ripple) => ripple.life > 0);
+}
+
+function animate(time = 0) {
+  hue += reducedMotion ? 0.015 : 0.055;
   ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = 'rgba(4, 7, 18, 0.20)';
+  ctx.fillStyle = 'rgba(3, 6, 20, 0.31)';
   ctx.fillRect(0, 0, width, height);
-  ctx.globalCompositeOperation = 'lighter';
+
+  ctx.globalCompositeOperation = 'screen';
+  breatheOrb(time);
+  drawRipples();
 
   particles.forEach((particle) => {
     particle.update();
     particle.draw();
   });
-  particles = particles.filter((p) => p.life > 0 && p.x > -120 && p.x < width + 120 && p.y > -120 && p.y < height + 120);
 
-  if (particles.length < Number(density.value)) {
-    particles.push(new Particle(Math.random() * width, Math.random() * height, {
-      velocity: 0.08 + Math.random() * 0.28,
-      life: 180 + Math.random() * 220,
-      size: 0.7 + Math.random() * 1.8,
-    }));
-  }
+  particles = particles.filter((particle) => particle.home || (particle.life > 0 && particle.x > -160 && particle.x < width + 160 && particle.y > -160 && particle.y < height + 160));
+  wells.forEach((well) => { well.life -= 1; });
+  wells = wells.filter((well) => well.life > 0);
+
+  if (particles.filter((particle) => particle.home).length < targetCount()) seed();
   requestAnimationFrame(animate);
 }
 
-function canvasPoint(event) {
-  const touch = event.touches?.[0];
-  return { x: touch ? touch.clientX : event.clientX, y: touch ? touch.clientY : event.clientY };
+function eventPoint(event) {
+  const touch = event.touches?.[0] || event.changedTouches?.[0];
+  return {
+    x: touch ? touch.clientX : event.clientX,
+    y: touch ? touch.clientY : event.clientY,
+  };
 }
 
-function handlePointer(event, intense = false) {
-  if (event.target.closest('main, footer')) return;
-  const { x, y } = canvasPoint(event);
-  burst(x, y, intense ? 28 : 8);
+function movePointer(event) {
+  event.preventDefault();
+  const point = eventPoint(event);
+  pointer.x = point.x;
+  pointer.y = point.y;
+  pointer.active = true;
+
+  const now = performance.now();
+  if (pointer.down && now - pointer.lastBurst > 110) {
+    pointer.lastBurst = now;
+    burst(pointer.x, pointer.y, 12);
+  }
 }
 
-releaseBtn.addEventListener('click', releaseText);
-textInput.addEventListener('keydown', (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') releaseText();
-});
-
-document.querySelectorAll('[data-phrase]').forEach((button) => {
-  button.addEventListener('click', () => {
-    textInput.value = button.dataset.phrase;
-    releaseText();
-  });
-});
-
-clearBtn.addEventListener('click', () => {
-  particles = [];
-  ctx.clearRect(0, 0, width, height);
-  seedBackground();
-  quoteText.textContent = '画面已经变轻，可以从一次呼吸重新开始。';
-});
-
-density.addEventListener('input', seedBackground);
-
-window.addEventListener('resize', resize);
-window.addEventListener('pointerdown', (event) => {
-  if (event.target.closest('main')) return;
-  pointerDown = true;
-  handlePointer(event, true);
-});
-window.addEventListener('pointermove', (event) => {
-  if (!pointerDown || event.target.closest('main')) return;
-  handlePointer(event);
-});
-window.addEventListener('pointerup', () => { pointerDown = false; });
-window.addEventListener('touchend', () => { pointerDown = false; });
-
-const breathCycle = [
-  { at: 0, text: '吸气' },
-  { at: 4000, text: '停留' },
-  { at: 8000, text: '呼气' },
-];
-function updateBreathText() {
-  const t = Date.now() % 14000;
-  const phase = [...breathCycle].reverse().find((item) => t >= item.at);
-  breathText.textContent = phase.text;
-  requestAnimationFrame(updateBreathText);
+function pressPointer(event) {
+  event.preventDefault();
+  movePointer(event);
+  pointer.down = true;
+  pointer.lastBurst = performance.now();
+  burst(pointer.x, pointer.y, 58);
 }
+
+function releasePointer(event) {
+  event.preventDefault();
+  pointer.down = false;
+  const point = eventPoint(event);
+  burst(point.x, point.y, 24);
+}
+
+window.addEventListener('resize', resize, { passive: true });
+window.visualViewport?.addEventListener('resize', resize, { passive: true });
+window.addEventListener('pointerdown', pressPointer, { passive: false });
+window.addEventListener('pointermove', movePointer, { passive: false });
+window.addEventListener('pointerup', releasePointer, { passive: false });
+window.addEventListener('pointercancel', () => { pointer.down = false; }, { passive: true });
+window.addEventListener('touchmove', (event) => event.preventDefault(), { passive: false });
+window.addEventListener('contextmenu', (event) => event.preventDefault());
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) resize();
+});
 
 resize();
-animate();
-updateBreathText();
-setTimeout(() => burst(width * 0.5, height * 0.5, 80, '欢迎，把压力释放成光'), 450);
+requestAnimationFrame(animate);
+setTimeout(() => burst(width * 0.5, height * 0.5, 72), 240);
